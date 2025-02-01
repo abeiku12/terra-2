@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Region:
+    Type: String
+    Default: 'us-east-1'
+    Description: 'AWS region (default: us-east-1)'
+  AvailabilityZone1:
+    Type: String
+    Default: 'us-east-1a'
+    Description: 'First availability zone'
+  AvailabilityZone2:
+    Type: String
+    Default: 'us-east-1b'
+    Description: 'Second availability zone'
+
+Resources:
+  # VPC
+  MyVPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: '10.0.0.0/16'
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: 'FreeTierVPC'
+
+  # Subnet 1
+  MySubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: '10.0.1.0/24'
+      AvailabilityZone: !Ref AvailabilityZone1
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: 'FreeTierSubnet-1'
+
+  # Subnet 2
+  MySubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: '10.0.2.0/24'
+      AvailabilityZone: !Ref AvailabilityZone2
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: 'FreeTierSubnet-2'
+
+  # Security Group for SSH
+  MySecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'Allow SSH access'
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: '0.0.0.0/0'
+
+  # IAM Role for EKS Cluster
+  EKSClusterRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Principal:
+              Service: 'eks.amazonaws.com'
+            Effect: 'Allow'
+      Policies:
+        - PolicyName: 'EKSClusterPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - 'eks:CreateCluster'
+                  - 'eks:DescribeCluster'
+                  - 'eks:ListClusters'
+                  - 'eks:UpdateClusterConfig'
+                  - 'eks:UpdateClusterVersion'
+                Effect: 'Allow'
+                Resource: '*'
+
+  # EKS Cluster
+  MyEKSCluster:
+    Type: 'AWS::EKS::Cluster'
+    Properties:
+      Name: 'my-eks-cluster'
+      RoleArn: !GetAtt EKSClusterRole.Arn
+      ResourcesVpcConfig:
+        SubnetIds:
+          - !Ref MySubnet1
+          - !Ref MySubnet2
+        SecurityGroupIds:
+          - !Ref MySecurityGroup
+
+  # IAM Role for EKS Node
+  EKSNodeRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Principal:
+              Service: 'ec2.amazonaws.com'
+            Effect: 'Allow'
+      Policies:
+        - PolicyName: 'EKSWorkerNodePolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - 'ec2:DescribeInstances'
+                  - 'ec2:DescribeSecurityGroups'
+                  - 'ec2:DescribeSubnets'
+                  - 'eks:DescribeCluster'
+                Effect: 'Allow'
+                Resource: '*'
+
+  # EKS Node Group
+  MyEKSNodeGroup:
+    Type: 'AWS::EKS::Nodegroup'
+    Properties:
+      ClusterName: !Ref MyEKSCluster
+      NodegroupName: 'my-node-group'
+      NodeRole: !GetAtt EKSNodeRole.Arn
+      SubnetIds:
+        - !Ref MySubnet1
+        - !Ref MySubnet2
+      InstanceTypes:
+        - 't3.micro'
+      ScalingConfig:
+        DesiredSize: 1
+        MaxSize: 1
+        MinSize: 1
+
+Outputs:
+  EKSClusterName:
+    Description: 'The name of the EKS cluster'
+    Value: !Ref MyEKSCluster
+
+  EKSClusterEndpoint:
+    Description: 'The endpoint of the EKS cluster'
+    Value: !GetAtt MyEKSCluster.Endpoint
+
+  EKSClusterSecurityGroupId:
+    Description: 'The security group ID for the EKS cluster'
+    Value: !Ref MySecurityGroup
