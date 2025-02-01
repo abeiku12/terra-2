@@ -1,0 +1,157 @@
+provider "aws" {
+  region = "us-east-1" # Update with your region
+}
+
+# Declare the availability zones data source
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+resource "aws_vpc" "my_vpc" {
+  cidr_block = "10.0.0.0/16"
+  enable_dns_support = true
+  enable_dns_hostnames = true
+  tags = {
+    Name = "FreeTierVPC"
+  }
+}
+
+# Create two subnets in different availability zones with non-overlapping CIDR blocks
+resource "aws_subnet" "my_subnet_1" {
+  vpc_id            = aws_vpc.my_vpc.id
+  cidr_block        = "10.0.1.0/24" # First subnet CIDR block
+  map_public_ip_on_launch = true
+  availability_zone = data.aws_availability_zones.available.names[0]
+  tags = {
+    Name = "FreeTierSubnet-1"
+  }
+}
+
+resource "aws_subnet" "my_subnet_2" {
+  vpc_id            = aws_vpc.my_vpc.id
+  cidr_block        = "10.0.2.0/24" # Second subnet CIDR block (ensuring no overlap)
+  map_public_ip_on_launch = true
+  availability_zone = data.aws_availability_zones.available.names[1]
+  tags = {
+    Name = "FreeTierSubnet-2"
+  }
+}
+
+resource "aws_security_group" "my_security_group" {
+  name        = "allow-ssh"
+  description = "Allow SSH access"
+  vpc_id      = aws_vpc.my_vpc.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Replace with specific IP range for security
+  }
+}
+
+resource "aws_eks_cluster" "my_eks_cluster" {
+  name     = "my-eks-cluster"
+  role_arn = aws_iam_role.eks_cluster_role.arn
+  vpc_config {
+    subnet_ids = [
+      aws_subnet.my_subnet_1.id,
+      aws_subnet.my_subnet_2.id
+    ]
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
+}
+
+resource "aws_iam_role" "eks_cluster_role" {
+  name = "eks-cluster-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Principal = {
+          Service = "eks.amazonaws.com"
+        }
+        Effect = "Allow"
+        Sid    = ""
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
+  role       = aws_iam_role.eks_cluster_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+}
+
+resource "aws_eks_node_group" "my_eks_node_group" {
+  cluster_name    = aws_eks_cluster.my_eks_cluster.name
+  node_group_name = "my-node-group"
+  node_role_arn   = aws_iam_role.eks_node_role.arn
+  subnet_ids      = [
+    aws_subnet.my_subnet_1.id,
+    aws_subnet.my_subnet_2.id
+  ]
+  instance_types  = ["t3.micro"] # Free tier eligible instance type
+
+  scaling_config {
+    desired_size = 1
+    max_size     = 1
+    min_size     = 1
+  }
+
+  depends_on = [aws_eks_cluster.my_eks_cluster]
+}
+
+resource "aws_iam_role" "eks_node_role" {
+  name = "eks-node-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+        Effect = "Allow"
+        Sid    = ""
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_node_policy" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}
+
+resource "aws_security_group" "eks_sg" {
+  vpc_id = aws_vpc.my_vpc.id
+}
+
+resource "aws_security_group_rule" "allow_ssh" {
+  type        = "ingress"
+  from_port   = 22
+  to_port     = 22
+  protocol    = "tcp"
+  cidr_blocks = ["0.0.0.0/0"]  # Replace with specific IP range for security
+  security_group_id = aws_security_group.eks_sg.id
+}
+
+output "eks_cluster_name" {
+  description = "The name of the EKS cluster"
+  value       = aws_eks_cluster.my_eks_cluster.name
+}
+
+output "eks_cluster_endpoint" {
+  description = "The endpoint of the EKS cluster"
+  value       = aws_eks_cluster.my_eks_cluster.endpoint
+}
+
+output "eks_cluster_security_group_id" {
+  description = "The security group ID for the EKS cluster"
+  value       = aws_security_group.eks_sg.id
+}
